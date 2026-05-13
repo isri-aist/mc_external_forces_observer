@@ -1,0 +1,58 @@
+# # UR10
+# residual_gain: 5
+# reference_frame: wrist_3_link
+# verbose: false
+# ft_sensor_name: none
+# use_force_sensor: false
+# torque_source_type: JointTorqueMeasurement
+# floating_base_mode: Decoupled
+# forward_dynamics_mode: Default
+# bias_term_mode: Default
+# residual_speed_gain: 100
+#
+# # KinovaGen3
+# residual_gain: 30
+# reference_frame: FT_sensor_wrench
+# verbose: false
+# ft_sensor_name: EEForceSensor
+# use_force_sensor: true
+# torque_source_type: JointTorqueMeasurement
+# floating_base_mode: Decoupled
+# forward_dynamics_mode: Default
+# bias_term_mode: Default
+# residual_speed_gain: 100
+
+# # H1
+# residual_gain: 10
+# reference_frame: pelvis
+# verbose: false
+# ft_sensor_name: none
+# use_force_sensor: false
+# torque_source_type: JointTorqueMeasurement
+# floating_base_mode: Decoupled
+# forward_dynamics_mode: Default
+# bias_term_mode: Default
+# residual_speed_gain: 100
+
+# # HRP5
+# residual_gain: 10
+# reference_frame: Body
+# ft_sensor_name: RightHandForceSensor
+# use_force_sensor: true
+# torque_source_type: JointTorqueMeasurement
+# floating_base_mode: Decoupled
+# forward_dynamics_mode: Default
+# bias_term_mode: Default
+# residual_speed_gain: 100
+
+# Default
+residual_gain: 10
+reference_frame: FT_frame
+verbose: false
+ft_sensor_name: ft_sensor
+use_force_sensor: true
+torque_source_type: JointTorqueMeasurement
+floating_base_mode: Decoupled
+forward_dynamics_mode: Default
+bias_term_mode: Default
+residual_speed_gain: 100
