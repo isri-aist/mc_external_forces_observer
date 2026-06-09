@@ -1,8 +1,8 @@
 {
-  "name": "mc-rtc-external-forces-estimator",
+  "name": "mc-rtc-external-forces-observer",
   "version-string": "1.0.0",
   "homepage": "",
-  "description": "ExternalForcesEstimator, using residual method for mc_rtc",
+  "description": "ExternalForcesObserver for mc_rtc",
   "dependencies": [
     "mc-rtc"
   ]
