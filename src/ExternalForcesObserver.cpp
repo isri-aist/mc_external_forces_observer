@@ -58,7 +58,22 @@ void ExternalForcesObserver::configure(const mc_control::MCController & ctl,
     // Removing rotor inertia effects
     M -= fd.HIr();
   }
-  Eigen::VectorXd qdot = rbd::sDofToVector(robot.mb(), robot.mbc().alpha);
+  Eigen::VectorXd qdot = Eigen::VectorXd::Zero(nDof_);
+  auto & realRobot = ctl.realRobot(robot_);
+  bool robotIsFloatingBase = (realRobot.mb().nrJoints() > 0
+                              && realRobot.mb().joint(0).type() == rbd::Joint::Free);
+  int pos = 0;
+  if(robotIsFloatingBase)
+  {
+    // Floating base velocity (6 DoF)
+    const auto & alpha_fb = realRobot.mbc().alpha[0];
+    for(int k = 0; k < 6; ++k) qdot(pos++) = alpha_fb[k];
+  }
+  for(int ji = robotIsFloatingBase ? 1 : 0; ji < realRobot.mb().nrJoints(); ++ji)
+  {
+    const auto & alpha_j = realRobot.mbc().alpha[ji];
+    for(size_t k = 0; k < alpha_j.size(); ++k) qdot(pos++) = alpha_j[k];
+  }
   pZero_ = M * qdot;
 
   tau_ext_hat_ = Eigen::VectorXd::Zero(nDof_);
@@ -150,40 +165,46 @@ Eigen::VectorXd ExternalForcesObserver::momentumObserver(const mc_control::MCCon
     return Eigen::VectorXd::Zero(nDof_);
   }
 
-  bool robotIsFloatingBase = (robot.mb().nrJoints() > 0 && robot.mb().joint(0).type() == rbd::Joint::Free);
-
-  Eigen::VectorXd tau_src;
+  const std::vector<double> * rawTorques = nullptr;
   switch(tau_mes_src_)
   {
-    case TorqueSourceType::CommandedTorque:
-      // Need friction model to finalize
-      tau_src = Eigen::VectorXd::Map(robot.jointTorques().data(), robot.jointTorques().size());
-      break;
-    case TorqueSourceType::CurrentMeasurement:
-      mc_rtc::log::warning("[ExternalForcesEstimator] Not implemented yet, switching to CommandedTorque source.");
-      // Need current to torque conversion, which requires motor constants and friction model
-      tau_mes_src_ = TorqueSourceType::CommandedTorque;
-      tau_src = Eigen::VectorXd::Map(robot.jointTorques().data(), robot.jointTorques().size());
-      break;
-    case TorqueSourceType::MotorTorqueMeasurement:
-      mc_rtc::log::warning("[ExternalForcesEstimator] Not implemented yet, switching to CommandedTorque source.");
-      // Need friction model to finalize + gear ratio for motor torque 
-      // tau = Eigen::VectorXd::Map(realRobot.jointTorques().data(), realRobot.jointTorques().size())
-      //       * robot.mb().joint(robot.mb().nrJoints() - 1).gearRatio();
-      tau_mes_src_ = TorqueSourceType::CommandedTorque;
-      tau_src = Eigen::VectorXd::Map(robot.jointTorques().data(), robot.jointTorques().size());
-      break;
     case TorqueSourceType::JointTorqueMeasurement:
-      tau_src = Eigen::VectorXd::Map(realRobot.jointTorques().data(), realRobot.jointTorques().size());
-      break; 
+      rawTorques = &realRobot.jointTorques();
+      break;
+
+    case TorqueSourceType::CurrentMeasurement:
+      mc_rtc::log::warning("[ExternalForcesEstimator] CurrentMeasurement not implemented yet, "
+                          "switching to CommandedTorque source.");
+      // TODO: tau(i) = kt(i) * gear_ratio(i) * realRobot.jointJointSensor(mbIdx).motorCurrent();
+      tau_mes_src_ = TorqueSourceType::CommandedTorque;
+      [[fallthrough]];
+
+    case TorqueSourceType::MotorTorqueMeasurement:
+      if(tau_mes_src_ == TorqueSourceType::MotorTorqueMeasurement)
+      {
+        mc_rtc::log::warning("[ExternalForcesEstimator] MotorTorqueMeasurement not implemented yet, "
+                            "switching to CommandedTorque source.");
+        // TODO: tau(i) = realRobot.jointTorques(i) * mb.joint(mbIdx).gearRatio();
+        tau_mes_src_ = TorqueSourceType::CommandedTorque;
+      }
+      [[fallthrough]];
+
+    case TorqueSourceType::CommandedTorque:
+      rawTorques = &robot.jointTorques();
+      break;
   }
-  if(robotIsFloatingBase)
+
+  const auto & rjo = robot.refJointOrder();
+  for(size_t i = 0; i < rjo.size(); ++i)
   {
-    tau.segment(6, tau_src.size()) = tau_src;
-  }
-  else
-  {
-    tau.head(tau_src.size()) = tau_src;
+    int mbIdx  = robot.mb().jointIndexByName(rjo[i]);
+    if(mbIdx < 0) continue;
+
+    int dofIdx = robot.mb().jointPosInDof(mbIdx);
+    if(robot.mb().joint(mbIdx).dof() != 1) continue;
+    if(dofIdx < 0 || dofIdx >= nDof_) continue;
+
+    tau(dofIdx) = (*rawTorques)[i];
   }
 
   rbd::ForwardDynamics fd = rbd::ForwardDynamics(realRobot.mb());
@@ -198,7 +219,20 @@ Eigen::VectorXd ExternalForcesObserver::momentumObserver(const mc_control::MCCon
     M -= fd.HIr();
   }
 
-  qdot = rbd::sDofToVector(realRobot.mb(), realRobot.alpha());
+  qdot = Eigen::VectorXd::Zero(nDof_);
+  bool robotIsFloatingBase = (robot.mb().nrJoints() > 0 && robot.mb().joint(0).type() == rbd::Joint::Free);
+  int pos = 0;
+  if(robotIsFloatingBase)
+  {
+    // Floating base velocity (6 DoF)
+    const auto & alpha_fb = realRobot.mbc().alpha[0];
+    for(int k = 0; k < 6; ++k) qdot(pos++) = alpha_fb[k];
+  }
+  for(int ji = robotIsFloatingBase ? 1 : 0; ji < realRobot.mb().nrJoints(); ++ji)
+  {
+    const auto & alpha_j = realRobot.mbc().alpha[ji];
+    for(size_t k = 0; k < alpha_j.size(); ++k) qdot(pos++) = alpha_j[k];
+  }
   Eigen::VectorXd pt = M * qdot; // Momentum at current time
 
   Eigen::MatrixXd C = coriolis.coriolis(realRobot.mb(), realRobot.mbc());
