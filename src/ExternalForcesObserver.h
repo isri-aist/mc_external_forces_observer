@@ -237,11 +237,15 @@ private:
   /// Force-sensor torque projection: Σ J_s^T · R^T · F_s.
   Eigen::VectorXd tau_ext_ft_sensor_;
 
+  Eigen::VectorXd tau_contact_;
+
   // ── Active-joint mask ───────────────────────────────────────────────────────
 
   /// Binary mask over the full DoF vector: 1 = include in feedback, 0 = exclude.
   /// Built by initializeActiveJoints(); applied to tau_ext_hat_ in before().
   Eigen::VectorXd activeJoints_;
+  
+  bool observerInitialized_ = false; ///< Whether the momentum observer has been initialised with a valid p0.
 };
 
 } // namespace mc_external_forces_observer
