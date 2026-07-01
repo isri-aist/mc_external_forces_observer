@@ -16,11 +16,12 @@
  *                          a friction model to be accurate).
  * - CurrentMeasurement:    Derive torque from motor current (requires motor
  *                          constants and a friction model — not yet implemented).
- * - MotorTorqueMeasurement: Use motor-side torque scaled by the gear ratio
- *                          (requires a friction model — not yet implemented).
  * - JointTorqueMeasurement: Use joint-side torque directly from sensors
  *                          (most accurate when available; rotor inertia effects
  *                          are removed from the inertia matrix in this mode).
+ * - MotorTorqueMeasurement: Expect motor-side torque scaled by the gear ratio 
+ *                          accessible from the real robot. Compared to JointTorqueMeasurement, 
+ *                          this mode does not remove rotor inertia effects.
  */
 enum class TorqueSourceType
 {
@@ -246,6 +247,26 @@ private:
   Eigen::VectorXd activeJoints_;
   
   bool observerInitialized_ = false; ///< Whether the momentum observer has been initialised with a valid p0.
+
+  // Utils
+  inline void mbcToVector(const std::vector<std::vector<double>> & value,
+                                Eigen::VectorXd & vec)
+  {
+      Eigen::DenseIndex idx = 0;
+
+      for(const auto & block : value)
+      {
+          Eigen::DenseIndex size = static_cast<Eigen::DenseIndex>(block.size());
+          if(size == 0)
+              continue;
+
+          Eigen::Map<const Eigen::VectorXd> qi(block.data(), size);
+
+          vec.segment(idx, size) = qi;
+
+          idx += size;
+      }
+  }
 };
 
 } // namespace mc_external_forces_observer

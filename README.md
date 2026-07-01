@@ -64,10 +64,10 @@ ObserverPipelines:
 
 | Value | Notes |
 |---|---|
-| `CommandedTorque` | Uses QP output; requires a friction model for accuracy |
+| `CommandedTorque` | Uses QP output |
 | `JointTorqueMeasurement` | Uses joint-side sensors directly; most accurate; rotor inertia is removed from the inertia matrix |
 | `CurrentMeasurement` | Not yet implemented; falls back to `CommandedTorque` |
-| `MotorTorqueMeasurement` | Not yet implemented; falls back to `CommandedTorque` |
+| `MotorTorqueMeasurement` | Uses motor-side sensors directly |
 
 ## Datastore interface
 

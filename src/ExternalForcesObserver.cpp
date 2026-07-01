@@ -167,11 +167,11 @@ Eigen::VectorXd ExternalForcesObserver::momentumObserver(const mc_control::MCCon
     return Eigen::VectorXd::Zero(nDof_);
   }
 
-  const std::vector<double> * rawTorques = nullptr;
+  const std::vector<std::vector<double>> * rawTorques = nullptr;
   switch(tau_mes_src_)
   {
     case TorqueSourceType::JointTorqueMeasurement:
-      rawTorques = &realRobot.jointTorques();
+      rawTorques = &realRobot.mbc().jointTorque;
       break;
 
     case TorqueSourceType::CurrentMeasurement:
@@ -184,34 +184,30 @@ Eigen::VectorXd ExternalForcesObserver::momentumObserver(const mc_control::MCCon
     case TorqueSourceType::MotorTorqueMeasurement:
       if(tau_mes_src_ == TorqueSourceType::MotorTorqueMeasurement)
       {
-        mc_rtc::log::warning("[ExternalForcesEstimator] MotorTorqueMeasurement not implemented yet, "
-                            "switching to CommandedTorque source.");
-        // TODO: tau(i) = realRobot.jointTorques(i) * mb.joint(mbIdx).gearRatio();
-        tau_mes_src_ = TorqueSourceType::CommandedTorque;
+        rawTorques = &realRobot.mbc().jointTorque; // Not including rotor inertia effects
       }
-      [[fallthrough]];
+      break;
 
     case TorqueSourceType::CommandedTorque:
-      rawTorques = &robot.jointTorques();
+      rawTorques = &robot.mbc().jointTorque;
       break;
   }
 
-  const auto & rjo = robot.refJointOrder();
-  for(size_t i = 0; i < rjo.size(); ++i)
+  mbcToVector(*rawTorques, tau);
+  mbcToVector(realRobot.mbc().alpha, qdot);
+
+  // Print size of tau and qdot for debugging
+  if(tau.size() != nDof_)
   {
-    int mbIdx  = robot.mb().jointIndexByName(rjo[i]);
-    if(mbIdx < 0) continue;
-
-    int dofIdx = robot.mb().jointPosInDof(mbIdx);
-    if(robot.mb().joint(mbIdx).dof() != 1) continue;
-    if(dofIdx < 0 || dofIdx >= nDof_) continue;
-
-    tau(dofIdx) = (*rawTorques)[i];
+    mc_rtc::log::error("[ExternalForcesObserver] Size mismatch: tau.size() = {}, expected nDof_ = {}", tau.size(), nDof_);
+    return Eigen::VectorXd::Zero(nDof_);
   }
 
-  // To fix
-  auto & tvm_robot = robot.tvmRobot();
-  tau = tvm_robot.tau()->value();
+  if(qdot.size() != nDof_)
+  {
+    mc_rtc::log::error("[ExternalForcesObserver] Size mismatch: qdot.size() = {}, expected nDof_ = {}", qdot.size(), nDof_);
+    return Eigen::VectorXd::Zero(nDof_);
+  }
 
   rbd::ForwardDynamics fd = rbd::ForwardDynamics(realRobot.mb());
   fd.computeC(realRobot.mb(), realRobot.mbc());
@@ -224,23 +220,6 @@ Eigen::VectorXd ExternalForcesObserver::momentumObserver(const mc_control::MCCon
     // Removing rotor inertia effects
     M -= fd.HIr();
   }
-
-  // bool robotIsFloatingBase = (robot.mb().nrJoints() > 0 && robot.mb().joint(0).type() == rbd::Joint::Free);
-  // int pos = 0;
-  // if(robotIsFloatingBase)
-  // {
-  //   // Floating base velocity (6 DoF)
-  //   const auto & alpha_fb = realRobot.mbc().alpha[0];
-  //   for(int k = 0; k < 6; ++k) qdot(pos++) = alpha_fb[k];
-  // }
-  // for(int ji = robotIsFloatingBase ? 1 : 0; ji < realRobot.mb().nrJoints(); ++ji)
-  // {
-  //   const auto & alpha_j = realRobot.mbc().alpha[ji];
-  //   for(size_t k = 0; k < alpha_j.size(); ++k) qdot(pos++) = alpha_j[k];
-  // }
-
-  // To fix
-  qdot = tvm_robot.alpha()->value();
 
   Eigen::VectorXd pt = M * qdot; // Momentum at current time
 
@@ -539,24 +518,5 @@ EstimationMethod ExternalForcesObserver::toEstimationMethod(const std::string & 
 }
 
 } // namespace mc_external_forces_observer
-
-static inline void updateVector(const std::vector<std::vector<double>> & value,
-                                Eigen::VectorXd & vec)
-{
-    Eigen::DenseIndex idx = 0;
-
-    for(const auto & block : value)
-    {
-        Eigen::DenseIndex size = static_cast<Eigen::DenseIndex>(block.size());
-        if(size == 0)
-            continue;
-
-        Eigen::Map<const Eigen::VectorXd> qi(block.data(), size);
-
-        vec.segment(idx, size) = qi;
-
-        idx += size;
-    }
-}
 
 EXPORT_OBSERVER_MODULE("ExternalForcesObserver", mc_external_forces_observer::ExternalForcesObserver)
