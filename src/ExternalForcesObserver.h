@@ -174,7 +174,7 @@ private:
   void initializeActiveJoints(const mc_rbdyn::Robot & robot);
 
   /** @brief Reset the momentum observer state. */
-  void resetMomentumObserver();
+  void resetMomentumObserver(const mc_control::MCController & ctl);
 
   /**
    * @brief Generalised momentum observer for unmeasured external torques.
@@ -267,6 +267,8 @@ private:
           idx += size;
       }
   }
+
+  bool resetObserver_;
 };
 
 } // namespace mc_external_forces_observer
