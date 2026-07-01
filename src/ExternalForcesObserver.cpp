@@ -8,8 +8,6 @@
 #include <mc_rtc/gui/Checkbox.h>
 #include <mc_rtc/gui/ArrayLabel.h>
 
-#include <mc_tvm/Robot.h>
-
 #include <RBDyn/Coriolis.h>
 
 namespace mc_external_forces_observer
@@ -55,18 +53,7 @@ void ExternalForcesObserver::configure(const mc_control::MCController & ctl,
   tau_momentum_observer_ = Eigen::VectorXd::Zero(nDof_);
   tau_ext_ft_sensor_ = Eigen::VectorXd::Zero(nDof_);
   integralTerm_ = Eigen::VectorXd::Zero(nDof_);
-  tau_contact_ = Eigen::VectorXd::Zero(nDof_);
-  // if(ctl.dynamicsConstraint->backend() != mc_solver::QPSolver::Backend::TVM)
-  // {
-  //   mc_rtc::log::warning(
-  //   "[ExternalForcesObserver] Contact-constraint torque compensation is only available with the TVM backend. " 
-  //   "The current backend will ignore torques induced by contact constraints, "
-  //   "which can lead to large errors in external force estimation when contacts are active.");
-  // }
-  // else
-  // {
-  //   tau_contact_ = ctl.dynamicsConstraint->dynamicFunction().contactTorque();
-  // }
+  resetObserver_ = true;
 
   addDatastoreCall(const_cast<mc_control::MCController &>(ctl));
 
@@ -76,10 +63,17 @@ void ExternalForcesObserver::configure(const mc_control::MCController & ctl,
 void ExternalForcesObserver::reset(const mc_control::MCController & /* ctl */)
 {
   mc_rtc::log::info("[ExternalForcesObserver][Reset] called");
+  resetObserver_ = true;
 }
 
 bool ExternalForcesObserver::run(const mc_control::MCController & ctl)
 {
+  if(resetObserver_)
+  {
+    resetMomentumObserver(ctl);
+    resetObserver_ = false;
+  }
+
   auto & robot = ctl.robots().robot(robot_);
   if(estimation_method_ == EstimationMethod::MomentumObserver)
   {
@@ -117,7 +111,7 @@ bool ExternalForcesObserver::run(const mc_control::MCController & ctl)
   if(tau_ext_hat_.array().isNaN().any() || tau_ext_hat_.array().isInf().any())
   {
     mc_rtc::log::warning("[ExternalForcesObserver] NaN in tau_ext_hat_, resetting observer and sending zero.");
-    resetMomentumObserver();
+    resetObserver_ = true;
     tau_ext_hat_.setZero();
   }
 
@@ -127,7 +121,6 @@ bool ExternalForcesObserver::run(const mc_control::MCController & ctl)
 void ExternalForcesObserver::update(mc_control::MCController & ctl)
 {
 
-  // tau_contact_ = ctl.dynamicsConstraint->dynamicFunction().contactTorque();
   if(activeHasChanged_ != isActive_)
   {
     activeHasChanged_ = isActive_;
@@ -146,11 +139,34 @@ void ExternalForcesObserver::update(mc_control::MCController & ctl)
   }
 }
 
-void ExternalForcesObserver::resetMomentumObserver()
+void ExternalForcesObserver::resetMomentumObserver(const mc_control::MCController & ctl)
 {
   integralTerm_.setZero();
   tau_momentum_observer_.setZero();
   observerInitialized_ = false;
+
+  // Initialize pZero_ to the current momentum if the robot is moving
+  auto & realRobot = ctl.realRobot(robot_);
+  Eigen::VectorXd qdot = Eigen::VectorXd::Zero(nDof_);
+  mbcToVector(realRobot.mbc().alpha, qdot);
+
+  if(qdot.size() != nDof_)
+  {
+    mc_rtc::log::error("[ExternalForcesObserver] Size mismatch: qdot.size() = {}, expected nDof_ = {}", qdot.size(), nDof_);
+    return;
+  }
+
+  rbd::ForwardDynamics fd = rbd::ForwardDynamics(realRobot.mb());
+  fd.computeH(realRobot.mb(), realRobot.mbc());
+
+  Eigen::MatrixXd M = fd.H();
+  if (tau_mes_src_ == TorqueSourceType::JointTorqueMeasurement)
+  {
+    // Removing rotor inertia effects
+    M -= fd.HIr();
+  }
+
+  pZero_ = M * qdot;
 }
 
 Eigen::VectorXd ExternalForcesObserver::momentumObserver(const mc_control::MCController & ctl)
@@ -196,7 +212,6 @@ Eigen::VectorXd ExternalForcesObserver::momentumObserver(const mc_control::MCCon
   mbcToVector(*rawTorques, tau);
   mbcToVector(realRobot.mbc().alpha, qdot);
 
-  // Print size of tau and qdot for debugging
   if(tau.size() != nDof_)
   {
     mc_rtc::log::error("[ExternalForcesObserver] Size mismatch: tau.size() = {}, expected nDof_ = {}", tau.size(), nDof_);
@@ -394,7 +409,7 @@ void ExternalForcesObserver::addToGUI(const mc_control::MCController & ctl,
         [this]() { return isActive_; },
         [this]() 
         {
-          resetMomentumObserver();
+          resetObserver_ = true;
           isActive_ = !isActive_; 
         }),
       mc_rtc::gui::Checkbox("Use sensor measurements", useFTSensorMeasurements_),
@@ -404,7 +419,7 @@ void ExternalForcesObserver::addToGUI(const mc_control::MCController & ctl,
           [this](double gain) {
             if(gain != residualGain_)
             {
-              resetMomentumObserver();
+              resetObserver_ = true;
             }
             residualGain_ = gain;
           }),
@@ -419,7 +434,7 @@ void ExternalForcesObserver::addToGUI(const mc_control::MCController & ctl,
       },
       [this](const std::string & v)
       {
-        resetMomentumObserver();
+        resetObserver_ = true;
         estimation_method_ = toEstimationMethod(v);
       }),
       mc_rtc::gui::ComboInput(
@@ -433,16 +448,14 @@ void ExternalForcesObserver::addToGUI(const mc_control::MCController & ctl,
       },
       [this](const std::string & v)
       {
-        resetMomentumObserver();
+        resetObserver_ = true;
         tau_mes_src_ = toTorqueSource(v);
       }),
       mc_rtc::gui::ArrayLabel("Torque Ext Estimated", jointNames, [this]() { return tau_ext_hat_; }),
       mc_rtc::gui::ArrayLabel("Torque Ext from Momentum Observer", jointNames,
                               [this]() { return tau_momentum_observer_; }),
       mc_rtc::gui::ArrayLabel("Torque Ext from Force Sensors", jointNames,
-                              [this]() { return tau_ext_ft_sensor_; }),
-      mc_rtc::gui::ArrayLabel("Torque Contact Compensation", jointNames,
-                              [this]() { return tau_contact_; })
+                              [this]() { return tau_ext_ft_sensor_; })
       );
 }
 
@@ -464,12 +477,14 @@ void ExternalForcesObserver::addToLogger(const mc_control::MCController & /* ctl
 void ExternalForcesObserver::addDatastoreCall( mc_control::MCController & ctl)
 {
   ctl.datastore().make_call("EF_Estimator::isActive", [this]() { 
-    resetMomentumObserver();
     return isActive_; 
   });
-  ctl.datastore().make_call("EF_Estimator::toggleActive", [this]() { isActive_ = !isActive_; });
+  ctl.datastore().make_call("EF_Estimator::toggleActive", [this]() { 
+    isActive_ = !isActive_; 
+    if(isActive_) resetObserver_ = true;
+  });
   ctl.datastore().make_call("EF_Estimator::setGain", [this](double gain) {
-    resetMomentumObserver();
+    resetObserver_ = true;
     residualGain_ = gain;
   });
   ctl.datastore().make_call("EF_Estimator::getGain", [this]() { return residualGain_; });

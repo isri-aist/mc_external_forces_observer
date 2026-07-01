@@ -174,7 +174,7 @@ private:
   void initializeActiveJoints(const mc_rbdyn::Robot & robot);
 
   /** @brief Reset the momentum observer state. */
-  void resetMomentumObserver();
+  void resetMomentumObserver(const mc_control::MCController & ctl);
 
   /**
    * @brief Generalised momentum observer for unmeasured external torques.
@@ -238,8 +238,6 @@ private:
   /// Force-sensor torque projection: Σ J_s^T · R^T · F_s.
   Eigen::VectorXd tau_ext_ft_sensor_;
 
-  Eigen::VectorXd tau_contact_;
-
   // ── Active-joint mask ───────────────────────────────────────────────────────
 
   /// Binary mask over the full DoF vector: 1 = include in feedback, 0 = exclude.
@@ -267,6 +265,8 @@ private:
           idx += size;
       }
   }
+
+  bool resetObserver_;
 };
 
 } // namespace mc_external_forces_observer
