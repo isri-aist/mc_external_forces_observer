@@ -82,12 +82,6 @@ namespace mc_external_forces_observer
  *   2. **Force-sensor based** — computes `τ_ext = J^T · w_sensor`
  *      directly from the measured wrenches.
  *
- * ## Active-joint mask
- *
- * Gripper joints and mimic joints are excluded from the feedback path by an
- * optional binary mask (`useActiveJointsMask_`). The full-DoF dynamics are
- * always computed to preserve physical consistency; the mask is applied only
- * to the torques sent to `setExternalTorques`.
  *
  * ## Configuration keys (mc_rtc YAML)
  * | Key                                   | Type   | Description                                                        |
@@ -95,7 +89,6 @@ namespace mc_external_forces_observer
  * | `residual_gain`                       | double | Observer gain K (higher = faster, noisier)                         |
  * | `torque_source_type`                  | string | One of the TorqueSourceType names                                  |
  * | `estimation_method`                   | string | One of the EstimationMethod names                                  |
- * | `use_active_joints_mask`              | bool   | Whether to mask out gripper/mimic joints in the feedback           |
  * | `use_forces_from_ft_sensors`          | bool   | Whether to fuse force sensor measurements into the observer        |
  *
  * ## Datastore interface
@@ -107,8 +100,6 @@ namespace mc_external_forces_observer
  * | `EF_Estimator::getGain`                              | double | Get current gain value                                           |
  * | `EF_Estimator::isUsingFTSensorMeasurements`          | bool   | Whether force sensor measurements are fused into the observer    |
  * | `EF_Estimator::toggleFTSensorMeasurements`           | void   | Toggle fusion of force sensor measurements into the observer     |
- * | `EF_Estimator::isUsingActiveJointsMask`              | bool   | Whether the active-joint mask is applied to the output           |
- * | `EF_Estimator::toggleActiveJointsMask`               | void   | Toggle the application of the active-joint mask to the output    |
  */
 struct ExternalForcesObserver : public mc_observers::Observer
 {
@@ -156,23 +147,6 @@ private:
   void loadConfig(const mc_rtc::Configuration & config);
   void addDatastoreCall(mc_control::MCController & ctl);
 
-  /**
-   * @brief Build the active-joint binary mask.
-   *
-   * Walks the multibody joint list to stay in sync with the true DoF vector
-   * layout. Sets mask entries to 1 for joints that should receive external
-   * torque feedback, and 0 for:
-   *   - Gripper actuated joints (handled by the gripper controller).
-   *   - Mimic joints (kinematically driven, no independent dynamics).
-   *   - Fixed joints (zero DoF).
-   *
-   * The floating base DoFs (if present) are always set to 1.
-   *
-   * @param robot The controller robot from which the multibody and gripper
-   *              information are read.
-   */
-  void initializeActiveJoints(const mc_rbdyn::Robot & robot);
-
   /** @brief Reset the momentum observer state. */
   void resetMomentumObserver(const mc_control::MCController & ctl);
 
@@ -184,8 +158,7 @@ private:
    * therefore applies only to unmeasured forces; sensor-captured forces
    * pass through at full bandwidth.
    *
-   * Computed over the full DoF vector to preserve inertia coupling. The
-   * active-joint mask is applied in `before()`, not here.
+   * Computed over the full DoF vector to preserve inertia coupling.
    *
    * @return Full-DoF external torque estimate (unmasked).
    */
@@ -219,8 +192,6 @@ private:
   bool isActive_ = false;          ///< Whether estimated torques are fed back to the QP.
   bool activeHasChanged_ = true;   ///< Tracks isActive_ transitions to log deactivation once.
   bool useFTSensorMeasurements_ = true;  ///< Whether to use force sensor data.
-  bool useActiveJointsMask_ = false;     /// If true, gripper and mimic joint torques are zeroed in the output.
-  bool activeJointsInitialized_ = false;
 
   // ── Observer state ──────────────────────────────────────────────────────────
 
@@ -229,7 +200,7 @@ private:
 
   // ── Torque signals ──────────────────────────────────────────────────────────
 
-  /// Final external torque estimate sent to the controller (masked if useActiveJointsMask_).
+  /// Final external torque estimate sent to the controller.
   Eigen::VectorXd tau_ext_hat_;
 
   /// Momentum observer residual r = K·(M·qdot - integral + p0).
@@ -237,12 +208,6 @@ private:
 
   /// Force-sensor torque projection: Σ J_s^T · R^T · F_s.
   Eigen::VectorXd tau_ext_ft_sensor_;
-
-  // ── Active-joint mask ───────────────────────────────────────────────────────
-
-  /// Binary mask over the full DoF vector: 1 = include in feedback, 0 = exclude.
-  /// Built by initializeActiveJoints(); applied to tau_ext_hat_ in before().
-  Eigen::VectorXd activeJoints_;
   
   bool observerInitialized_ = false; ///< Whether the momentum observer has been initialised with a valid p0.
 
@@ -267,6 +232,9 @@ private:
   }
 
   bool resetObserver_;
+
+  std::vector<std::string> dofNames_;
+  std::vector<std::string> refDofOrder(const rbd::MultiBodyConfig & mbc, const rbd::MultiBody & mb);
 };
 
 } // namespace mc_external_forces_observer

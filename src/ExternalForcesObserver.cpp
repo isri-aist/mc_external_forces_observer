@@ -8,6 +8,8 @@
 #include <mc_rtc/gui/Checkbox.h>
 #include <mc_rtc/gui/ArrayLabel.h>
 
+#include <mc_tvm/Robot.h>
+
 #include <RBDyn/Coriolis.h>
 
 namespace mc_external_forces_observer
@@ -37,17 +39,9 @@ void ExternalForcesObserver::configure(const mc_control::MCController & ctl,
   
   auto & robot = ctl.robots().robot(robot_);
   nDof_ = robot.mb().nrDof();
+  dofNames_ = refDofOrder(robot.mbc(), robot.mb());
   mc_rtc::log::info("[ExternalForcesObserver][Init] Initializing observer for robot \"{}\" with {} DoFs", robot.name(), nDof_);
 
-  if(useActiveJointsMask_)
-  {
-    initializeActiveJoints(robot);
-    activeJointsInitialized_ = true;
-  }
-  else
-  {
-    activeJoints_ = Eigen::VectorXd::Ones(nDof_);
-  }
   pZero_ = Eigen::VectorXd::Zero(nDof_);
   tau_ext_hat_ = Eigen::VectorXd::Zero(nDof_);
   tau_momentum_observer_ = Eigen::VectorXd::Zero(nDof_);
@@ -88,26 +82,6 @@ bool ExternalForcesObserver::run(const mc_control::MCController & ctl)
     mc_rtc::log::error_and_throw<std::runtime_error>("[ExternalForcesObserver] Invalid estimation method.");
   }
 
-  if(useActiveJointsMask_ && !activeJointsInitialized_)
-  {
-    initializeActiveJoints(robot);
-    activeJointsInitialized_ = true;
-  }
-  else if(!useActiveJointsMask_ && activeJointsInitialized_)
-  {
-    activeJoints_ = Eigen::VectorXd::Ones(nDof_);
-    activeJointsInitialized_ = false;
-  }
-
-  if(activeJoints_.array().isNaN().any() || activeJoints_.array().isInf().any())
-  {
-    mc_rtc::log::error("[ExternalForcesObserver] NaN in activeJoints_! Resetting to ones.");
-    activeJoints_ = Eigen::VectorXd::Ones(nDof_);
-  }
-
-  // Apply the active joint mask to the estimated external torque
-  tau_ext_hat_ = tau_ext_hat_.cwiseProduct(activeJoints_);
-
   if(tau_ext_hat_.array().isNaN().any() || tau_ext_hat_.array().isInf().any())
   {
     mc_rtc::log::warning("[ExternalForcesObserver] NaN in tau_ext_hat_, resetting observer and sending zero.");
@@ -120,7 +94,6 @@ bool ExternalForcesObserver::run(const mc_control::MCController & ctl)
 
 void ExternalForcesObserver::update(mc_control::MCController & ctl)
 {
-
   if(activeHasChanged_ != isActive_)
   {
     activeHasChanged_ = isActive_;
@@ -212,6 +185,7 @@ Eigen::VectorXd ExternalForcesObserver::momentumObserver(const mc_control::MCCon
   mbcToVector(*rawTorques, tau);
   mbcToVector(realRobot.mbc().alpha, qdot);
 
+  // Print size of tau and qdot for debugging
   if(tau.size() != nDof_)
   {
     mc_rtc::log::error("[ExternalForcesObserver] Size mismatch: tau.size() = {}, expected nDof_ = {}", tau.size(), nDof_);
@@ -301,79 +275,17 @@ Eigen::VectorXd ExternalForcesObserver::forceSensorBasedEstimation(const mc_cont
   return tau_ext_ft_sensor_;
 }
 
-void ExternalForcesObserver::initializeActiveJoints(const mc_rbdyn::Robot & robot)
-{
-  // Collect gripper joints to exclude from estimation
-  std::vector<std::string> activeGripperJoints;
-  for(const auto & g : robot.grippers())
-  {
-    for(const auto & n : g.get().activeJoints())
-    {
-      activeGripperJoints.push_back(n);
-    }
-  }
-  auto isActiveGripperJoint = [&](const std::string & jointName) {
-    return std::find(activeGripperJoints.begin(), activeGripperJoints.end(), jointName)
-           != activeGripperJoints.end();
-  };
-
-  // Initialize mask to zero over the full DoF vector
-  activeJoints_ = Eigen::VectorXd::Zero(nDof_);
-
-  bool robotIsFloatingBase = (robot.mb().nrJoints() > 0 && robot.mb().joint(0).type() == rbd::Joint::Free);
-  // Floating base: first 6 DoFs are always estimated
-  if(robotIsFloatingBase)
-  {
-    activeJoints_.head(6).setOnes();
-  }
-
-  // Walk the multibody joint list to stay in sync with the actual DoF vector
-  // layout. pos tracks the current position in the DoF vector.
-  // Joint 0 is either the floating base (Free, 6 DoF, already handled
-  // above) or the fixed root (0 DoF), so we start at joint index 1 in both cases.
-  int pos = robotIsFloatingBase ? 6 : 0;
-  for(int ji = 1; ji < robot.mb().nrJoints(); ++ji)
-  {
-    const auto & j = robot.mb().joint(ji);
-    if(j.dof() != 1)
-    {
-      // Multi-DoF or 0-DoF joints (fixed, mimic root) — advance pos and skip
-      pos += j.dof();
-      continue;
-    }
-
-    if(!j.isMimic() && !isActiveGripperJoint(j.name()))
-    {
-      activeJoints_(pos) = 1;
-      mc_rtc::log::info("[ExternalForcesObserver][initializeActiveJoints] Estimated joint (pos {}) -> {}", pos,
-                        j.name());
-    }
-    else
-    {
-      mc_rtc::log::info("[ExternalForcesObserver][initializeActiveJoints] Joint {} excluded from estimation.",
-                        j.name());
-    }
-
-    pos++;
-  }
-
-  mc_rtc::log::info("[ExternalForcesObserver][initializeActiveJoints] Active DoFs: {}/{}",
-                    static_cast<int>(activeJoints_.sum()), nDof_);
-}
-
 void ExternalForcesObserver::loadConfig(const mc_rtc::Configuration & config)
 {
   // load config
   // residual_gain: 10 # Higher is better, but lead to more noise in the estimation (recommended values are between 10 and dt/2)
   // torque_source_type: CommandedTorque # Options: JointTorqueMeasurement, CommandedTorque, EstimatedTorque
   // estimation_method: MomentumObserver # Options: MomentumObserver, ForceSensorBased (MomentumObserver includes the use of the FT sensors)
-  // use_active_joints_mask: false # If true, the mimic and grippers related joints will be masked out in the estimation
   // use_forces_from_ft_sensors: true # If true, the forces from the FT sensors will be used in the estimation
   // is_active: true # If false, the observer will run but the estimated external torques will not be applied to the robot (useful for debugging or to just log the estimation without applying it as feedback)
   residualGain_ = config("residual_gain", 10.0);
   tau_mes_src_ = toTorqueSource(config("torque_source_type", std::string("CommandedTorque")));
   estimation_method_ = toEstimationMethod(config("estimation_method", std::string("MomentumObserver")));
-  useActiveJointsMask_ = config("use_active_joints_mask", false);
   useFTSensorMeasurements_ = config("use_forces_from_ft_sensors", true);
   isActive_ = config("is_active", true);
 }
@@ -383,27 +295,6 @@ void ExternalForcesObserver::addToGUI(const mc_control::MCController & ctl,
                                       const std::vector<std::string> & category)
 {
   const auto & robot = ctl.robots().robot(robot_);
-  std::vector<std::string> jointNames;
-  bool robotIsFloatingBase = (robot.mb().nrJoints() > 0 && robot.mb().joint(0).type() == rbd::Joint::Free);
-  if(robotIsFloatingBase)
-  {
-    jointNames.reserve(6 + robot.refJointOrder().size());
-    jointNames.insert(jointNames.end(), {"rx", "ry", "rz", "x", "y", "z"});
-    jointNames.insert(jointNames.end(), robot.refJointOrder().begin(), robot.refJointOrder().end());
-  }
-  else
-  {
-    jointNames = robot.refJointOrder();
-  }
-
-  int pos = 0;
-  for (const auto & jointName : jointNames)
-  {
-    mc_rtc::log::info("[ExternalForcesObserver][addToGUI] Joint: {}", jointName);
-    pos++;
-  }
-  mc_rtc::log::info("[ExternalForcesObserver][addToGUI] Total joints: {}", pos);
-
   gui.addElement(
       category, mc_rtc::gui::Checkbox("Is estimation feedback active", 
         [this]() { return isActive_; },
@@ -413,7 +304,6 @@ void ExternalForcesObserver::addToGUI(const mc_control::MCController & ctl,
           isActive_ = !isActive_; 
         }),
       mc_rtc::gui::Checkbox("Use sensor measurements", useFTSensorMeasurements_),
-      mc_rtc::gui::Checkbox("Active Gripper & Mimic joints mask", useActiveJointsMask_),
       mc_rtc::gui::NumberInput(
           "Gain", [this]() { return residualGain_; },
           [this](double gain) {
@@ -451,10 +341,10 @@ void ExternalForcesObserver::addToGUI(const mc_control::MCController & ctl,
         resetObserver_ = true;
         tau_mes_src_ = toTorqueSource(v);
       }),
-      mc_rtc::gui::ArrayLabel("Torque Ext Estimated", jointNames, [this]() { return tau_ext_hat_; }),
-      mc_rtc::gui::ArrayLabel("Torque Ext from Momentum Observer", jointNames,
+      mc_rtc::gui::ArrayLabel("Torque Ext Estimated", dofNames_, [this]() { return tau_ext_hat_; }),
+      mc_rtc::gui::ArrayLabel("Torque Ext from Momentum Observer", dofNames_,
                               [this]() { return tau_momentum_observer_; }),
-      mc_rtc::gui::ArrayLabel("Torque Ext from Force Sensors", jointNames,
+      mc_rtc::gui::ArrayLabel("Torque Ext from Force Sensors", dofNames_,
                               [this]() { return tau_ext_ft_sensor_; })
       );
 }
@@ -464,14 +354,16 @@ void ExternalForcesObserver::addToLogger(const mc_control::MCController & /* ctl
                                          const std::string & category)
 {
   logger.addLogEntry(category + "_gain", this, [this]() { return residualGain_; });
-  logger.addLogEntry(category + "_tauExtHat", this, [this]() { return tau_ext_hat_; });
   logger.addLogEntry(category + "_isActive", this, [this]() { return isActive_; });
-  logger.addLogEntry(category + "_integralTerm", this, [this]() { return integralTerm_; });
-  logger.addLogEntry(category + "_activeJoints", this, [this]() { return activeJoints_; });
-  logger.addLogEntry(category + "_tauMomentumObserver", this, [this]() { return tau_momentum_observer_; });
-  logger.addLogEntry(category + "_tauExtFtSensor", this, [this]() { return tau_ext_ft_sensor_; });
   logger.addLogEntry(category + "_useFTSensorMeasurements", this, [this]() { return useFTSensorMeasurements_; });
-  logger.addLogEntry(category + "_useActiveJointsMask", this, [this]() { return useActiveJointsMask_; });
+
+  for(size_t i = 0; i < dofNames_.size(); ++i)
+  {
+    logger.addLogEntry(category + "_tauExtHat_" + dofNames_[i], this, [this, i]() { return tau_ext_hat_(i); });
+    logger.addLogEntry(category + "_tauMomentumObserver_" + dofNames_[i], this, [this, i]() { return tau_momentum_observer_(i); });
+    logger.addLogEntry(category + "_integralTerm_" + dofNames_[i], this, [this, i]() { return integralTerm_(i); });
+    logger.addLogEntry(category + "_tauExtFtSensor_" + dofNames_[i], this, [this, i]() { return tau_ext_ft_sensor_(i); });
+  }
 }
 
 void ExternalForcesObserver::addDatastoreCall( mc_control::MCController & ctl)
@@ -492,10 +384,6 @@ void ExternalForcesObserver::addDatastoreCall( mc_control::MCController & ctl)
                                    [this]() { return useFTSensorMeasurements_; });
   ctl.datastore().make_call("EF_Estimator::toggleFTSensorMeasurements",
                                    [this]() { useFTSensorMeasurements_ = !useFTSensorMeasurements_; });
-  ctl.datastore().make_call("EF_Estimator::isUsingActiveJointsMask",
-                                   [this]() { return useActiveJointsMask_; });
-  ctl.datastore().make_call("EF_Estimator::toggleActiveJointsMask",
-                                   [this]() { useActiveJointsMask_ = !useActiveJointsMask_; });
 }
 
 std::string ExternalForcesObserver::toString(TorqueSourceType src)
@@ -530,6 +418,52 @@ EstimationMethod ExternalForcesObserver::toEstimationMethod(const std::string & 
     }
   }
   mc_rtc::log::error_and_throw<std::runtime_error>("[ExternalForcesObserver] Invalid estimation method: {}", s);
+}
+
+std::vector<std::string> ExternalForcesObserver::refDofOrder(const rbd::MultiBodyConfig & mbc, const rbd::MultiBody & mb)
+{
+  std::vector<std::string> dofNames;
+  const auto & alpha = mbc.alpha; // DoF Size variable
+  bool robotIsFloatingBase =
+      (mb.nrJoints() > 0 && mb.joint(0).type() == rbd::Joint::Free);
+
+  for(size_t i = 0; i < alpha.size(); ++i)
+  {
+    const auto & block = alpha[i];
+    Eigen::DenseIndex size = static_cast<Eigen::DenseIndex>(block.size());
+    if(size == 0)
+    {
+      continue;
+    }
+
+    if(i == 0 && robotIsFloatingBase)
+    {
+      static const std::array<std::string, 6> freeFlyerNames = {"rx", "ry", "rz", "x", "y", "z"};
+      dofNames.insert(dofNames.end(), freeFlyerNames.begin(), freeFlyerNames.end());
+    }
+    else
+    {
+      const std::string & jointName = mb.joint(static_cast<int>(i)).name();
+
+      if(size == 1)
+      {
+        dofNames.push_back(jointName);
+      }
+      else
+      {
+        for(Eigen::DenseIndex k = 0; k < size; ++k)
+        {
+          dofNames.push_back(jointName + "_" + std::to_string(k));
+        }
+      }
+    }
+  }
+  // Assert that the number of DoF names matches the size of the number of dofs in the MultiBodyConfig
+  if(dofNames.size() != static_cast<size_t>(mb.nrDof()))
+  {
+    mc_rtc::log::error_and_throw<std::runtime_error>("[ExternalForcesObserver] Inconsistent DoF count");
+  }
+  return dofNames;
 }
 
 } // namespace mc_external_forces_observer
