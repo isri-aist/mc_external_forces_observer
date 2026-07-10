@@ -51,7 +51,6 @@ ObserverPipelines:
         estimation_method: MomentumObserver # or ForceSensorBased
         is_active: true                  # false = estimate and log only, no feedback to QP
         use_forces_from_ft_sensors: true # include FT sensor wrenches in the estimate
-        use_active_joints_mask: false    # zero out gripper and mimic joints in the output
         # MomentumObserver-only keys:
         residual_gain: 10.0              # observer gain K; higher = faster response, more noise
         torque_source_type: CommandedTorque  # JointTorqueMeasurement preferred when available
@@ -81,5 +80,3 @@ Other controllers or plugins can interact with the observer at runtime:
 | `EF_Estimator::getGain` | `double` | Read current gain |
 | `EF_Estimator::isUsingFTSensorMeasurements` | `bool` | FT fusion status |
 | `EF_Estimator::toggleFTSensorMeasurements` | `void()` | Toggle FT fusion |
-| `EF_Estimator::isUsingActiveJointsMask` | `bool` | Mask status |
-| `EF_Estimator::toggleActiveJointsMask` | `void()` | Toggle joint mask |
