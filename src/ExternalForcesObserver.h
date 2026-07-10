@@ -208,6 +208,8 @@ private:
 
   /// Force-sensor torque projection: Σ J_s^T · R^T · F_s.
   Eigen::VectorXd tau_ext_ft_sensor_;
+
+  Eigen::VectorXd tau_contact_;
   
   bool observerInitialized_ = false; ///< Whether the momentum observer has been initialised with a valid p0.
 
